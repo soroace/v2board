@@ -12,7 +12,6 @@
     "Email verification code has been sent, please request again later": "Email verification code has been sent, please request again later",
     "Failed to create order": "Failed to create order",
     "Failed to open ticket": "Failed to open ticket",
-    "Gmail alias is not supported": "Gmail alias is not supported",
     "Incorrect email or password": "Incorrect email or password",
     "Incorrect email verification code": "Incorrect email verification code",
     "Insufficient balance": "Insufficient balance",
@@ -96,5 +95,8 @@
     "Sending frequently, please try again later": "Sending frequently, please try again later",
     "Current product is sold out": "Current product is sold out",
     "There are too many password errors, please try again after :minute minutes.": "There are too many password errors, please try again after :minute minutes.",
-    "Reset failed, Please try again later": "Reset failed, Please try again later"
+    "Reset failed, Please try again later": "Reset failed, Please try again later",
+    "Email must be all lowercase": "Email must be all lowercase",
+    "Email can not contain non-ASCII characters": "Email can not contain non-ASCII characters",
+    "Only letters, numbers and . _ - are allowed before @": "Only letters, numbers and . _ - are allowed before @"
 }

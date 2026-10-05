@@ -106,6 +106,39 @@ class Helper
         return true;
     }
 
+    /**
+     * 邮箱格式硬约束（内置，不受后台开关控制）：整个邮箱不允许非 ASCII、不允许大写字母；
+     * 本地部分只允许 a-z 0-9 . _ -（@ 之后交给 email 校验规则）。通过返回 null。
+     * 只作用于注册（AuthController::register()），存量用户不受影响。
+     *
+     * 用「非 ASCII」而不是枚举中日韩范围：中文有扩展区 A/B/C 与全角标点，枚举必漏。
+     *
+     * @param  mixed $email
+     * @return string|null
+     */
+    public static function emailPolicyViolation($email)
+    {
+        if (!is_string($email)) {
+            return null;   // 非字符串交给 AuthRegister 的 email 校验规则去处理
+        }
+        // 不加 u 修饰符：按字节判，非法 UTF-8 也不会漏（字节 >= 0x80 全部命中）
+        if (preg_match('/[^\x20-\x7E]/', $email)) {
+            return 'non_ascii';
+        }
+        if (preg_match('/[A-Z]/', $email)) {
+            return 'uppercase';
+        }
+        $at = strrpos($email, '@');
+        if ($at === false) {
+            return null;
+        }
+        if (preg_match('/[^a-z0-9._-]/', substr($email, 0, $at))) {
+            return 'illegal_local';
+        }
+
+        return null;
+    }
+
     public static function trafficConvert(int $byte)
     {
         $kb = 1024;

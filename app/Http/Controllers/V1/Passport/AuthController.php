@@ -45,12 +45,6 @@ class AuthController extends Controller
                 abort(500, __('Email suffix is not in the Whitelist'));
             }
         }
-        if ((int)config('v2board.email_gmail_limit_enable', 0)) {
-            $prefix = explode('@', $request->input('email'))[0];
-            if (strpos($prefix, '.') !== false || strpos($prefix, '+') !== false) {
-                abort(500, __('Gmail alias is not supported'));
-            }
-        }
         if ((int)config('v2board.stop_register', 0)) {
             abort(500, __('Registration has closed'));
         }
@@ -59,22 +53,17 @@ class AuthController extends Controller
                 abort(500, __('You must use the invitation code to register'));
             }
         }
-        // 反随机邮箱注册：
-        // ① 本地部分含大写字母 → 拒绝（统一要求全小写）；
-        // ② 数字组（连续数字段）≥ 2 且其中存在单个数字的组 → 拒绝（单个数字被字母
-        //    分隔散布为随机串特征；全部为多位数字组的放行）。
-        if ((int)config('v2board.random_alias_block_enable', 0)) {
-            $emailInput = $request->input('email');
-            if (is_string($emailInput) && strpos($emailInput, '@') !== false) {
-                $local = explode('@', $emailInput)[0];
-                if (preg_match('/[A-Z]/', $local)) {
-                    abort(500, __('注册失败：请使用全小写字母的邮箱注册'));
-                }
-                preg_match_all('/\d+/', $local, $digitMatches);
-                $digitGroups = $digitMatches[0] ?? [];
-                if (count($digitGroups) >= 2 && in_array(1, array_map('strlen', $digitGroups), true)) {
-                    abort(500, __('注册失败：该邮箱格式受限，请更换邮箱后重试'));
-                }
+        // 邮箱格式白名单（可选开关）：判据见 Helper::emailPolicyViolation()
+        if ((int)config('v2board.email_format_strict_enable', 0)) {
+            $emailViolation = Helper::emailPolicyViolation($request->input('email'));
+            if ($emailViolation === 'uppercase') {
+                abort(500, __('Email must be all lowercase'));
+            }
+            if ($emailViolation === 'non_ascii') {
+                abort(500, __('Email can not contain non-ASCII characters'));
+            }
+            if ($emailViolation === 'illegal_local') {
+                abort(500, __('Only letters, numbers and . _ - are allowed before @'));
             }
         }
         $email = $request->input('email');
