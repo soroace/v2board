@@ -7,11 +7,9 @@ use Illuminate\Support\Facades\Cache;
 class Helper
 {
     /**
-     * ss 的 cipher 白名单（渲染器 / SIP008 / 附加订阅解析器 / 面板 app.clash.yaml 共用这一张表）
-     *
-     * 只有这 4 种是「各端都能忠实下发」的 AEAD cipher：Clash / Surfboard / Shadowsocks(SIP008)
-     * 会按这张表过滤（不在名单里整条不下发），ClashMeta 系则把 cipher 原样写进配置
-     * → 所以陌生取值必须在解析阶段就丢掉。改这张表 = 同时改上面所有地方，别再各写一份。
+     * ss 的 cipher 白名单（渲染器 / SIP008 / 附加订阅 / 面板 app.clash.yaml 共用）：
+     * 不在名单里的整条不下发，所以陌生取值要在解析阶段就丢掉；
+     * 改这张表 = 同时改上面所有地方，别再各写一份。
      */
     const SS_CIPHERS = array(
         'aes-128-gcm',
@@ -21,12 +19,8 @@ class Helper
     );
 
     /**
-     * 站点表单额外允许的 2022 系列（**只对本站节点成立**）
-     *
-     * 它的 server key 要靠节点 created_at 派生（见 getServerKey），而附加订阅节点没有
-     * created_at → 解析器在 parseShadowsocks() 开头就单独跳过 2022，存储侧
-     * （ExtraSubscriptionService::$nodeValues）也不放行：否则渲染器会在 ss2022 分支
-     * 无守护地读 created_at → 整份订阅 500（tools/store-value-audit.php 守着这条）。
+     * 站点表单额外允许的 2022 系列（只对本站节点成立：server key 靠 created_at 派生）。
+     * 附加订阅节点没有 created_at → 解析器和存储侧都不放行，否则 ss2022 分支整份订阅 500。
      */
     const SS_CIPHERS_2022 = array(
         '2022-blake3-aes-128-gcm',
@@ -107,21 +101,15 @@ class Helper
     }
 
     /**
-     * 邮箱格式硬约束（内置，不受后台开关控制）：整个邮箱不允许非 ASCII、不允许大写字母；
-     * 本地部分只允许 a-z 0-9 . _ -（@ 之后交给 email 校验规则）。通过返回 null。
-     * 只作用于注册（AuthController::register()），存量用户不受影响。
-     *
-     * 用「非 ASCII」而不是枚举中日韩范围：中文有扩展区 A/B/C 与全角标点，枚举必漏。
-     *
-     * @param  mixed $email
-     * @return string|null
+     * 邮箱格式白名单（开关 email_format_strict_enable，默认关；只在注册生效）：
+     * 整个邮箱不许非 ASCII、不许大写；本地部分只允许 a-z 0-9 . _ -。通过返回 null。
      */
     public static function emailPolicyViolation($email)
     {
         if (!is_string($email)) {
-            return null;   // 非字符串交给 AuthRegister 的 email 校验规则去处理
+            return null;
         }
-        // 不加 u 修饰符：按字节判，非法 UTF-8 也不会漏（字节 >= 0x80 全部命中）
+        // 不加 u：按字节判，非法 UTF-8 也漏不掉
         if (preg_match('/[^\x20-\x7E]/', $email)) {
             return 'non_ascii';
         }
@@ -229,33 +217,16 @@ class Helper
     }
 
     /**
-     * 渲染器能不能忠实表达这个传输方式（判断对象是**站点自建**节点）
-     *
-     * 附加订阅的外部节点在 SubscriptionParser 里已按同样的基准收窄过；但站点节点的 network 由后台
-     * 直接选择（vless / trojan 的服务端校验只有 required，任意字符串都能进库），而多数渲染器只在
-     * 特定传输下才写传输参数 → 表达不了的会被静默丢掉，客户端按 tcp 连 → 看着有节点却连不上。
-     * 表达不了就不产出该节点（与 sing-box / QuantumultX 既有的「跳过」做法一致）。
-     *
-     * 基准是逐格实测（tools/site-network-audit.php：把 network=X 的渲染结果与 network=tcp 逐行比对）：
-     *   clash 系（Clash / ClashMeta / ClashVerge / ClashNyanpasu / Stash）：
-     *       vmess、trojan 只认 tcp / ws / grpc；vless 另加 xhttp
-     *   surge / surfboard：vmess、trojan 只认 tcp / ws
-     *   loon / quantumultx：vmess、vless、trojan 只认 tcp / ws
-     *   shadowrocket：vmess 只认 tcp / ws / grpc（vless / trojan 走 Helper::buildUri，已知传输都忠实）
-     *   URI 类（V2rayN / V2rayNG / v2RayTun / General / Passwall / SagerNet / SSRPlus）已知传输都忠实，不登记
-     *
-     * 未登记的渲染器、以及不使用传输的协议（shadowsocks / hysteria / tuic / anytls）一律放行；
-     * 未登记的传输值一律不放行（库里可能有历史值或手改值，宁可少一个节点也不要坏节点）。
-     *
-     * @param string $client clash / surge / loon / quantumultx / shadowrocket
-     * @param string|null $type
-     * @param string|null $network
-     * @return bool
+     * 渲染器能不能忠实表达这个传输（只判站点自建节点；外部节点已在 SubscriptionParser 收窄）。
+     * 站点节点的 network 由后台任填，表达不了会被静默丢掉 → 客户端按 tcp 连却连不上，
+     * 所以表达不了就不产出该节点。基准逐格实测（tools/site-network-audit.php），明细见表 $table。
+     * 未登记的渲染器、不用传输的协议（ss / hysteria / tuic / anytls）一律放行；
+     * 未登记的传输值一律不放行（库里可能有历史值或手改值）。
      */
     public static function networkExpressible($client, $type, $network)
     {
         if ($network === null || $network === '') {
-            $network = 'tcp';   // 库里 network 可空（v2_server_trojan.network 就是 DEFAULT NULL），空值等价于 tcp
+            $network = 'tcp';   // network 可空（trojan 表 DEFAULT NULL），空值等价 tcp
         }
         $table = array(
             'clash' => array(
@@ -332,7 +303,7 @@ class Helper
         $str = str_replace(['+', '/', '='], ['-', '_', ''], base64_encode("{$cipher}:{$password}"));
         $add = self::formatHost($server['host']);
         $uri = "ss://{$str}@{$add}:{$server['port']}";
-        // 附加订阅的 ss 节点没有 obfs 键时必须不读它（否则 Undefined array key -> 整份订阅 500）
+        // 附加订阅的 ss 可能没有 obfs 键，不 isset 会 500
         if (isset($server['obfs']) && $server['obfs'] === 'http') {
             $uri .= "?plugin=obfs-local;obfs=http;obfs-host={$server['obfs-host']};path={$server['obfs-path']}";
         }
@@ -445,11 +416,8 @@ class Helper
             }
         }
         if (isset($server['encryption']) && $server['encryption'] == 'mlkem768x25519plus') {
-            // 最后一道兜底：只要 encryption 是 mlkem、却没有 encryption_settings，原代码这里就是
-            // Undefined array key → 整份订阅 500。正常路径上不该有这种节点
-            // （附加订阅侧：解析器整条跳过 + $nodeValues 拦掉旧存储；站点侧：VlessController
-            //  保存时必生成该键），所以这里只为「DB 直改 / 历史脏行 / 将来新增的调用方」兜底，
-            // 代价是退化成一条空 password 的节点 —— 比整份订阅 500 好。
+            // 兜底：mlkem 却没有 encryption_settings 时原代码会 500；正常路径不该出现
+            // （解析器跳过 + $nodeValues 拦旧存储 + VlessController 必生成该键）
             $encSettings = $server['encryption_settings'] ?? [];
             $enc = 'mlkem768x25519plus.' . ($encSettings['mode'] ?? 'native') . '.' . ($encSettings['rtt'] ?? '1rtt');
             if (isset($encSettings['client_padding']) && !empty($encSettings['client_padding'])) {
