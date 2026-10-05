@@ -6,11 +6,8 @@ use Illuminate\Support\Facades\Cache;
 
 class Helper
 {
-    /**
-     * ss 的 cipher 白名单（渲染器 / SIP008 / 附加订阅 / 面板 app.clash.yaml 共用）：
-     * 不在名单里的整条不下发，所以陌生取值要在解析阶段就丢掉；
-     * 改这张表 = 同时改上面所有地方，别再各写一份。
-     */
+    // ss 的 cipher 白名单（渲染器 / SIP008 / 附加订阅 / 面板 app.clash.yaml 共用）：
+    // 不在名单里的整条不下发，改这里等于同时改所有地方
     const SS_CIPHERS = array(
         'aes-128-gcm',
         'aes-192-gcm',
@@ -18,10 +15,8 @@ class Helper
         'chacha20-ietf-poly1305',
     );
 
-    /**
-     * 站点表单额外允许的 2022 系列（只对本站节点成立：server key 靠 created_at 派生）。
-     * 附加订阅节点没有 created_at → 解析器和存储侧都不放行，否则 ss2022 分支整份订阅 500。
-     */
+    // 2022 系列只对本站节点成立（server key 靠 created_at 派生）；
+    // 附加订阅节点没有 created_at，不放行（否则 ss2022 分支整份订阅 500）
     const SS_CIPHERS_2022 = array(
         '2022-blake3-aes-128-gcm',
         '2022-blake3-aes-256-gcm',
@@ -100,16 +95,12 @@ class Helper
         return true;
     }
 
-    /**
-     * 邮箱格式白名单（开关 email_format_strict_enable，默认关；只在注册生效）：
-     * 整个邮箱不许非 ASCII、不许大写；本地部分只允许 a-z 0-9 . _ -。通过返回 null。
-     */
+    // 邮箱格式白名单：开关 email_format_strict_enable（默认关），只在注册生效
     public static function emailPolicyViolation($email)
     {
         if (!is_string($email)) {
             return null;
         }
-        // 不加 u：按字节判，非法 UTF-8 也漏不掉
         if (preg_match('/[^\x20-\x7E]/', $email)) {
             return 'non_ascii';
         }
@@ -216,17 +207,12 @@ class Helper
         return strtr(rawurlencode($str), $revert);
     }
 
-    /**
-     * 渲染器能不能忠实表达这个传输（只判站点自建节点；外部节点已在 SubscriptionParser 收窄）。
-     * 站点节点的 network 由后台任填，表达不了会被静默丢掉 → 客户端按 tcp 连却连不上，
-     * 所以表达不了就不产出该节点。基准逐格实测（tools/site-network-audit.php），明细见表 $table。
-     * 未登记的渲染器、不用传输的协议（ss / hysteria / tuic / anytls）一律放行；
-     * 未登记的传输值一律不放行（库里可能有历史值或手改值）。
-     */
+    // 渲染器表达不了就整条不产出（否则客户端按 tcp 连 → 看着有节点却连不上）；对照表 $table，
+    // 未登记的渲染器 / 不用传输的协议放行，未登记的传输值不放行（库里可能有历史值）
     public static function networkExpressible($client, $type, $network)
     {
         if ($network === null || $network === '') {
-            $network = 'tcp';   // network 可空（trojan 表 DEFAULT NULL），空值等价 tcp
+            $network = 'tcp';
         }
         $table = array(
             'clash' => array(
@@ -416,8 +402,7 @@ class Helper
             }
         }
         if (isset($server['encryption']) && $server['encryption'] == 'mlkem768x25519plus') {
-            // 兜底：mlkem 却没有 encryption_settings 时原代码会 500；正常路径不该出现
-            // （解析器跳过 + $nodeValues 拦旧存储 + VlessController 必生成该键）
+            // 兜底：mlkem 缺 encryption_settings 时原代码会 500（正常路径不该出现）
             $encSettings = $server['encryption_settings'] ?? [];
             $enc = 'mlkem768x25519plus.' . ($encSettings['mode'] ?? 'native') . '.' . ($encSettings['rtt'] ?? '1rtt');
             if (isset($encSettings['client_padding']) && !empty($encSettings['client_padding'])) {
