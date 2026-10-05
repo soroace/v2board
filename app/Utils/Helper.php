@@ -95,8 +95,7 @@ class Helper
         return true;
     }
 
-    // 邮箱格式白名单：开关 email_format_strict_enable（默认关），只在注册生效。
-    // 只判两条：整串不许非 ASCII（email:strict 会放行中文，只能自己拦）、@ 前只允许 a-z 0-9 . _ -
+    // 邮箱格式白名单：开关 email_format_strict_enable（默认关），只在注册生效
     public static function emailPolicyViolation($email)
     {
         if (!is_string($email)) {
@@ -104,6 +103,9 @@ class Helper
         }
         if (preg_match('/[^\x20-\x7E]/', $email)) {
             return 'non_ascii';
+        }
+        if (preg_match('/[A-Z]/', $email)) {
+            return 'uppercase';
         }
         $at = strrpos($email, '@');
         if ($at === false) {

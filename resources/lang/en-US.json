@@ -96,6 +96,7 @@
     "Current product is sold out": "Current product is sold out",
     "There are too many password errors, please try again after :minute minutes.": "There are too many password errors, please try again after :minute minutes.",
     "Reset failed, Please try again later": "Reset failed, Please try again later",
+    "Email must be all lowercase": "Email must be all lowercase",
     "Email can not contain non-ASCII characters": "Email can not contain non-ASCII characters",
     "Only letters, numbers and . _ - are allowed before @": "Only letters, numbers and . _ - are allowed before @"
 }

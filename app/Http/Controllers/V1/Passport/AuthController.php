@@ -56,6 +56,9 @@ class AuthController extends Controller
         // 邮箱格式白名单（可选开关）：判据见 Helper::emailPolicyViolation()
         if ((int)config('v2board.email_format_strict_enable', 0)) {
             $emailViolation = Helper::emailPolicyViolation($request->input('email'));
+            if ($emailViolation === 'uppercase') {
+                abort(500, __('Email must be all lowercase'));
+            }
             if ($emailViolation === 'non_ascii') {
                 abort(500, __('Email can not contain non-ASCII characters'));
             }
