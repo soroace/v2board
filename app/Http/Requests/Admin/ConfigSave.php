@@ -59,6 +59,8 @@ class ConfigSave extends FormRequest
         'subscribe_limit_count' => 'nullable|integer',
         'subscribe_limit_expire' => 'nullable|integer',
         // extra subscribe（附加订阅节点：把额外订阅的节点拼接在本站节点之后下发）
+        // 多行字符串（一行一条链接），不能用 url 规则，改在 rules() 里逐行校验；
+        // 必须写成数组：rules() 会往这个键上追加闭包，写成字符串会 Fatal error（[] operator not supported）
         'extra_subscribe_enable' => 'in:0,1',
         // 多行字符串（一行一条链接），所以不能用 url 规则，改在 rules() 里逐行校验。
         //    必须写成**数组**：rules() 会往这个键上追加闭包，
@@ -68,8 +70,8 @@ class ConfigSave extends FormRequest
             'string',
             'max:5000',
         ],
-        // 服务层会把这两个值夹紧（ExtraSubscriptionService::refreshInterval / requestOptions），
-        // 这里引用同一批常量，免得「后台允许填的值」与「服务端实际生效的值」各写一份而漂移
+        // 服务层会把这两个值夹紧（refreshInterval / requestOptions），这里引用同一批常量，
+        // 免得「后台允许填的值」与「服务端实际生效的值」各写一份而漂移
         'extra_subscribe_cache_ttl' => 'nullable|integer|min:' . ExtraSubscriptionService::MIN_REFRESH_TTL
             . '|max:' . ExtraSubscriptionService::MAX_REFRESH_TTL,
         'extra_subscribe_timeout' => 'nullable|integer|min:' . ExtraSubscriptionService::MIN_TIMEOUT
@@ -161,16 +163,14 @@ class ConfigSave extends FormRequest
                     $fail('额外订阅链接格式不正确，必须为 http(s):// 开头的完整地址（一行一条）');
                     return;
                 }
-                // 按**去重后**的条数计：服务端 urls() 会去重，
-                // 否则「10 条链接里粘贴了 1 条重复」会被误报成超过上限
+                // 按去重后的条数计（服务端 urls() 会去重），否则「10 条链接里粘贴了 1 条重复」会被误报超上限
                 if (isset($seen[$line])) {
                     continue;
                 }
                 $seen[$line] = true;
                 $count++;
             }
-            // 与服务端的 ExtraSubscriptionService::MAX_URLS 对齐：
-            // 原来超过上限只是服务端静默丢弃，这里直接拒绝，管理员当场就知道
+            // 与服务端 MAX_URLS 对齐：原来超过上限只是服务端静默丢弃，这里直接拒绝，管理员当场就知道
             if ($count > ExtraSubscriptionService::MAX_URLS) {
                 $fail('额外订阅链接最多 ' . ExtraSubscriptionService::MAX_URLS
                     . ' 条（当前 ' . $count . ' 条）');

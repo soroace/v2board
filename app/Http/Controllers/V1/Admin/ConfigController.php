@@ -208,16 +208,11 @@ class ConfigController extends Controller
                 $config[$k] = $data[$k];
             }
         }
-        // 注意：这里**不要**改成「拿 ConfigSave::RULES 去裁剪整个 $config」。
-        // RULES 不是 v2board 配置的全集 —— frontend_admin_path / server_log_enable /
-        // server_v2ray_domain / server_v2ray_protocol / stripe_pk_live 都不在 RULES 里，
+        // 注意：不要把这里改成「拿 ConfigSave::RULES 裁剪整个 $config」—— RULES 不是配置全集
+        // （frontend_admin_path / server_v2ray_domain / stripe_pk_live 等都不在 RULES 里），
         // 按 RULES 裁剪会在每次保存时把它们从 config/v2board.php 里删掉。
-        // （原代码这里是 `foreach (ConfigSave::RULES as $k => $v)` 再判
-        //   `!in_array($k, array_keys(ConfigSave::RULES))`，条件恒为 false、是段死代码；
-        //   已删除，上面的循环就是它的正确形态。）
-        // 「额外订阅」的键是否出现在本次提交里：只有它被保存过才值得立刻重拉一次，
-        // 免得管理员改支付 / 主题等无关配置时也去骚扰第三方（`$data` 下面会被 var_export 覆盖，
-        // 所以必须在这里先取好）
+        // 「额外订阅」的键是否出现在本次提交里：只有它被保存过才值得立刻重拉一次（$data 下面
+        // 会被 var_export 覆盖，所以必须在这里先取好）
         $extraSubscribeTouched = false;
         foreach (array('extra_subscribe_enable', 'extra_subscribe_url',
                        'extra_subscribe_cache_ttl', 'extra_subscribe_timeout') as $extraKey) {
@@ -237,16 +232,14 @@ class ConfigController extends Controller
         }
         Artisan::call('config:cache');
 
-        // 附加订阅的结果由定时任务 extra:subscribe 预取到
-        // storage/app/extra-subscribe.json，订阅下发只读本地。
-        // 这里把本进程内存里的配置树换成刚写入的值 —— config:cache 只重写缓存文件、
-        // 不会重载内存里的 config，不换的话下面 markDue() 会按**旧链接 / 旧开关**判断。
+        // 附加订阅的结果由 extra:subscribe 预取到 storage/app/extra-subscribe.json，下发只读本地。
+        // 这里把内存里的配置树换成刚写入的值 —— config:cache 不会重载内存，不换的话下面
+        // markDue() 会按旧链接 / 旧开关判断。
         Config::set('v2board', $config);
 
-        // 保存后立刻把「额外订阅」标记为待刷新：下一轮 extra:subscribe（每分钟）就会去
-        // 第三方拉最新结果，不必等缓存时间（默认 1 小时）到。
-        // 刻意**不**在这里直接调 refresh()：那会把后台保存卡住最长一个超时（默认 15s）。
-        // 返回 false 都不影响正确性：未启用 / 没配链接 / 已有实例正在跑（它本来就在拉最新）。
+        // 保存后立刻把「额外订阅」标记为待刷新：下一轮 extra:subscribe（每分钟）就会去拉最新，
+        // 不必等缓存时间到。刻意不在这里直接 refresh()：那会把后台保存卡住最长一个超时；
+        // 返回 false 都不影响正确性（未启用 / 没配链接 / 已有实例正在跑）。
         if ($extraSubscribeTouched) {
             (new ExtraSubscriptionService())->markDue();
         }

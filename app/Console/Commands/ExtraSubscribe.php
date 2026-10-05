@@ -6,10 +6,8 @@ use App\Services\ExtraSubscriptionService;
 use Illuminate\Console\Command;
 
 /**
- * 拉取「额外订阅」链接的节点并保存到本地
- *
- * 订阅下发路径（ExtraSubscriptionService::merge）只读本地文件，不发起请求，
- * 所以需要这条命令定期把第三方的节点预取回来；由 Kernel::schedule 每分钟调度。
+ * 拉取「额外订阅」链接的节点并保存到本地：下发路径（ExtraSubscriptionService::merge）
+ * 只读本地文件、不发请求，所以靠这条命令定期预取；由 Kernel::schedule 每分钟调度。
  */
 class ExtraSubscribe extends Command
 {
@@ -70,8 +68,7 @@ class ExtraSubscribe extends Command
                 . $result['failed'] . ' 条，共 ' . $result['nodes'] . ' 个节点。');
         }
 
-        // 本命令由 Kernel::schedule 每分钟调度一次，没有实际动作时不要输出：
-        // 否则 cron 日志会被「刷新完成：成功 0 条」和状态表刷屏。
+        // 本命令由 schedule 每分钟调度一次：没有实际动作时不要输出，否则 cron 日志会被刷屏；
         // 人工在终端执行（或加 --status）时照常打印完整状态。
         if ($this->output->isDecorated() || $result['refreshed'] || $result['failed']) {
             $this->showStatus($service->status());
@@ -80,8 +77,6 @@ class ExtraSubscribe extends Command
 
     /**
      * 打印各链接状态
-     *
-     * @param array $rows
      */
     private function showStatus($rows)
     {

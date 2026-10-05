@@ -3,25 +3,15 @@
 namespace App\Utils;
 
 /**
- * 订阅内容解析器（附加订阅）
- *
- * 把额外订阅链接返回的内容（base64 或明文 URI 列表）解析为内部节点结构，
- * 复用现有 Protocol 渲染器一并下发。
- *
- * 两个要点：
- *  - 每个节点带 `_credential`（第三方自己的 uuid/密码），渲染器优先读它，
- *    不能被本站当前用户 uuid 覆盖，否则节点必然连不上
- *  - ss-2022 主动跳过：其 server key 需由 created_at 派生（Helper::getServerKey），
- *    第三方节点的 created_at 不可知，下发只会产出连不上的节点
- *
- * 语法上限 PHP 8.0（composer.json 要求 ^8.0）：可用 8.0 写法，不用 8.1+ 特性。
+ * 订阅内容解析器（附加订阅）：把额外订阅链接返回的内容（base64 或明文 URI 列表）解析成
+ * 内部节点结构，复用现有 Protocol 渲染器一并下发。
+ * 每个节点带 `_credential`（第三方自己的凭据），渲染器优先读它、不能被本站 uuid 覆盖，
+ * 否则节点必然连不上；ss-2022 主动跳过（server key 要 created_at 派生，第三方不可知）。
  */
 class SubscriptionParser
 {
     /**
      * scheme => 解析方法
-     *
-     * @var array
      */
     private static $handlerMap = array(
         'ss'        => 'parseShadowsocks',
@@ -36,43 +26,26 @@ class SubscriptionParser
     );
 
     /**
-     * 第三方节点能用的 ss cipher —— 单一来源：Helper::SS_CIPHERS
-     *
-     * 只有这 4 种是各端都能忠实下发的；表单允许的另外两种 2022-blake3-* 只对本站节点成立
-     * （server key 要靠 created_at 派生），已在 parseShadowsocks() 开头单独跳过。
-     *
-     * @var array
+     * 第三方节点能用的 ss cipher（单一来源 Helper::SS_CIPHERS）；表单允许的 2022-blake3-* 只对
+     * 本站节点成立，已在 parseShadowsocks() 开头单独跳过。
      */
     private static $ssCiphers = Helper::SS_CIPHERS;
 
     /**
-     * 认得的传输方式（不在这张表里的直接丢弃 —— 陌生取值原样下发只会得到「按 tcp 连」的坏节点）
-     *
-     * 这张表答的是「项目认得什么」，与站点节点那边的取值范围对齐（各 Save 规则的并集：
-     * ServerVmessSave 放行 tcp/kcp/ws/http/domainsocket/quic/grpc/httpupgrade/xhttp，
-     * V2nodeController 放行 tcp/ws/grpc/http/httpupgrade/xhttp；h2 是 v2rayN 的习惯写法）。
-     * 「某个客户端能不能忠实表达」是**另一层**判断，由渲染器侧的 Helper::networkExpressible
-     * 逐格决定（Clash 系只认 tcp/ws/grpc，Loon / QuantumultX / sing-box 各自更窄）。
-     * 所以这里放宽不会让任何客户端拿到坏节点 —— 它只会让 URI 类客户端（V2rayN / Shadowrocket /
-     * General / Passwall / SagerNet / SSRPlus / v2RayTun）拿回它们本来就能忠实下发的节点。
-     *
-     * @var array
+     * 认得的传输方式（不在这张表里的直接丢弃 —— 陌生取值下发出去只会得到「按 tcp 连」的坏节点）。
+     * 这张表答的是「项目认得什么」，与站点节点各 Save 规则的并集对齐；「某个客户端能不能忠实表达」
+     * 是另一层，由 Helper::networkExpressible 逐格决定，所以这里放宽不会让谁拿到坏节点。
      */
     private static $networks = array('tcp', 'ws', 'grpc', 'kcp', 'http', 'h2', 'httpupgrade',
         'xhttp', 'quic', 'domainsocket');
 
     /**
      * 跳过原因计数
-     *
-     * @var array
      */
     private static $skipped = array();
 
     /**
-     * 解析订阅原文
-     *
-     * @param  string $raw 订阅原文（base64 或明文）
-     * @return array ['nodes' => 节点数组, 'skipped' => [原因 => 条数]]
+     * 解析订阅原文（base64 或明文）：返回 ['nodes' => 节点数组, 'skipped' => [原因 => 条数]]
      */
     public static function parse($raw)
     {
@@ -90,8 +63,8 @@ class SubscriptionParser
             if ($node === null) {
                 continue;
             }
-            // 上游可能把「信息条目」也塞在订阅里（见 isInfoPseudoNode）：
-            // 它们与真节点同构，不拦掉就会被当节点下发给本站用户
+            // 上游可能把「信息条目」也塞进订阅（见 isInfoPseudoNode）：它们与真节点同构，
+            // 不拦掉就会被当节点下发给本站用户
             if (self::isInfoPseudoNode(isset($node['name']) ? $node['name'] : '')) {
                 self::skip('info_pseudo_node');
                 continue;
@@ -106,22 +79,11 @@ class SubscriptionParser
     }
 
     /**
-     * 是否是「信息条目」而不是真节点
-     *
-     * 本项目的 setSubscribeInfoToServers() 会把「剩余流量 / 距离下次重置剩余 / 套餐到期」
-     * 三条显示用信息做成与真节点**同构**的条目（克隆第一个节点、只换名字）塞进订阅里。
-     * 上游只要是 v2board 系面板且开了 show_info_to_server_enable，这些条目就会跟着被抓回来。
-     *
-     * 必须拦掉，否则有三个后果（实测见 tools/info-pseudo-node-check.php）：
-     *   1. 本站用户的节点列表里会多出「剩余流量：504.7 GB」这种根本不是节点的条目
-     *   2. 它们是**上游那个账号**的流量/到期数据，等于把上游账号信息透给本站用户
-     *   3. 名字每次刷新都会变（流量在走、天数在减），客户端里表现为节点不断新增 / 残留
-     *      —— 很容易被误判成「本地存储一直在累积」（存储其实是整体替换的）
-     *
+     * 是否是「信息条目」而不是真节点：本站 setSubscribeInfoToServers() 会把「剩余流量 / 距离下次
+     * 重置剩余 / 套餐到期」做成与真节点同构的条目（上游面板开了该功能就会跟着被抓回来）。
+     * 必须拦掉，否则用户列表里会多出这些假节点、把上游账号的流量与到期信息透给用户、
+     * 而且名字每次刷新都在变（客户端表现为节点不断新增 / 残留）。
      * 匹配用的是本项目自己的命名约定（全角冒号），第三方真节点几乎不可能撞上。
-     *
-     * @param  string $name
-     * @return bool
      */
     private static function isInfoPseudoNode($name)
     {
@@ -130,8 +92,6 @@ class SubscriptionParser
 
     /**
      * 记录跳过原因
-     *
-     * @param string $reason
      */
     private static function skip($reason)
     {
@@ -142,16 +102,12 @@ class SubscriptionParser
     }
 
     /**
-     * 内容解码：明文直接返回；base64 则解码
-     *
-     * @param  string $raw
-     * @return string
+     * 内容解码：明文直接返回，base64 则解码（顺带剥掉 UTF-8 BOM）
      */
     private static function decode($raw)
     {
         $raw = trim((string)$raw);
-        // 有些订阅文件带 UTF-8 BOM（EF BB BF）：不剥掉会让首行 scheme 带上不可见字节，
-        // 明文源丢第一条、base64 源则整份解析失败
+        // 有些订阅带 UTF-8 BOM：不剥掉会让首行 scheme 带上不可见字节，明文源丢第一条、base64 源整份失败
         if (strncmp($raw, "\xEF\xBB\xBF", 3) === 0) {
             $raw = substr($raw, 3);
         }
@@ -177,9 +133,6 @@ class SubscriptionParser
 
     /**
      * 解析单行 URI
-     *
-     * @param  string $line
-     * @return array|null
      */
     private static function parseLine($line)
     {
@@ -202,11 +155,7 @@ class SubscriptionParser
      * ------------------------------------------------------------------ */
 
     /**
-     * ss://：SIP002（base64(method:password)@host:port?plugin=...#name）
-     * 与老式（base64(method:password@host:port)#name）均支持
-     *
-     * @param  string $uri
-     * @return array|null
+     * ss://：SIP002（base64(method:password)@host:port?plugin=...#name）与老式格式都支持
      */
     private static function parseShadowsocks($uri)
     {
@@ -227,9 +176,7 @@ class SubscriptionParser
         $userinfo = substr($body, 0, $at);
         $hostport = substr($body, $at + 1);
 
-        // userinfo 有三种写法：SIP002 的 base64(method:password)、
-        // SIP002 的明文变体（method:password，可能 URL 编码）、
-        // 以及老式格式（整段 base64 已在上方解码，这里已是明文）
+        // userinfo 有三种写法：SIP002 的 base64(method:password)、其明文变体（可能 URL 编码）、老式格式
         $decoded = self::b64($userinfo);
         if ($decoded === null || strpos($decoded, ':') === false) {
             $plain = rawurldecode($userinfo);
@@ -243,22 +190,18 @@ class SubscriptionParser
         $cipher = substr($decoded, 0, $colon);
         $credential = substr($decoded, $colon + 1);
 
-        // 空密码：与 trojan/vless/anytls 的处理保持一致，直接丢弃
-        // （渲染器会把空 _credential 当成「用本站用户 uuid」，下发必然是连不上的僵尸节点）
+        // 空密码直接丢弃（渲染器会把空 _credential 当成「用本站用户 uuid」，下发必然是连不上的僵尸节点）
         if ($credential === '') {
             self::skip('ss_no_password');
             return null;
         }
 
-        // 2022-blake3 不是「不支持」，而是做不了：它的 server key 要靠 created_at
-        // 派生（Helper::getServerKey），第三方节点的 created_at 不可知，下发必然连不上
+        // 2022-blake3 不是「不支持」而是做不了：server key 要靠 created_at 派生，第三方节点的不可知
         if (strpos($cipher, '2022-blake3') !== false) {
             self::skip('ss_2022_unsupported');
             return null;
         }
-        // 只保留本站原生支持的 cipher：来源是后台表单白名单
-        // （Admin\ServerShadowsocksSave）与 Shadowsocks/Clash/Surfboard 渲染器的判断，
-        // 三者一致；其余一律丢弃，避免下发客户端不认的加密方式
+        // 只保留本站原生支持的 cipher（后台表单白名单与 Shadowsocks/Clash/Surfboard 渲染器判断一致）
         if (!in_array($cipher, self::$ssCiphers, true)) {
             self::skip('ss_unsupported_cipher:' . $cipher);
             return null;
@@ -273,9 +216,8 @@ class SubscriptionParser
         $node = self::base('shadowsocks', $name, $hp[0], $hp[1], $credential);
         $node['cipher'] = $cipher;
 
-        // 带插件的 ss：渲染器只支持 obfs=http 这一种写法（Helper::buildShadowsocksUri /
-        // Clash / ClashMeta / Singbox 都只认它），其余（v2ray-plugin、obfs=tls…）下发出去
-        // 等于「直连节点」——源站要求插件握手，客户端必然连不上，所以直接跳过并记原因
+        // 带插件的 ss：渲染器只支持 obfs=http，其余（v2ray-plugin、obfs=tls…）下发出去等于直连节点，
+        // 源站要求插件握手 → 客户端必然连不上，所以直接跳过并记原因
         if (!empty($query['plugin'])) {
             $opts = self::parsePluginOpts($query['plugin']);
             if (!isset($opts['obfs']) || $opts['obfs'] !== 'http') {
@@ -299,9 +241,6 @@ class SubscriptionParser
      */
     /**
      * 传输方式是否认得（认不得就丢掉并记原因）
-     *
-     * @param  string $network
-     * @return bool
      */
     private static function networkAllowed($network)
     {
@@ -328,9 +267,8 @@ class SubscriptionParser
             self::skip('vmess_bad_json');
             return null;
         }
-        // 同 splitQuery()：vmess 分享链接的 JSON 字段一律是标量，`"path": []` / `"add": []`
-        // 这种畸形写法会变成数组并炸掉渲染器（Surfboard 的字符串插值）。
-        // 必须在下面取 add/port/id 之前过滤：否则被过滤掉的键会在 base() 里变成「未定义键」。
+        // 同 splitQuery()：vmess 分享链接的 JSON 字段一律是标量，`"path": []` / `"add": []` 这种畸形
+        // 写法会变成数组并炸掉渲染器；必须在取 add/port/id 之前过滤，否则被过滤掉的键会变成未定义键
         $cfg = array_filter($cfg, 'is_scalar');
         if (empty($cfg['add']) || empty($cfg['port'])) {
             self::skip('vmess_bad_json');
@@ -346,7 +284,7 @@ class SubscriptionParser
 
         $tlsSettings = array(
             // 必须同时写 snake_case 与 camelCase：ClashMeta::buildVmess() 只认 camelCase，
-            // 只写 snake_case 会让 Clash 输出丢掉 servername / skip-cert-verify（不报错但连不上）。
+            // 只写前者会让 Clash 输出丢掉 servername / skip-cert-verify（不报错但连不上）
             'server_name'    => isset($cfg['sni']) ? $cfg['sni'] : (isset($cfg['host']) ? $cfg['host'] : ''),
             'serverName'     => isset($cfg['sni']) ? $cfg['sni'] : (isset($cfg['host']) ? $cfg['host'] : ''),
             'allow_insecure' => isset($cfg['allowInsecure']) ? (int)$cfg['allowInsecure'] : 0,
@@ -410,9 +348,8 @@ class SubscriptionParser
             'allow_insecure' => isset($query['insecure']) ? self::bool01($query['insecure']) : 0,
             'fingerprint'    => isset($query['fp']) ? $query['fp'] : 'chrome',
         );
-        // reality（tls=2）必须无条件写这两个键：Clash 系 buildVless 在 tls==2 时直接读
-        // public_key / short_id（无 ??），缺键会 Undefined array key -> 整份订阅 500。
-        // short-id 本就可选（URI 里可以没有 sid），故写 '' 是正确的。
+        // reality（tls=2）必须无条件写 public_key / short_id：Clash 系 buildVless 在 tls==2 时直接读
+        // （无 ??），缺键整份订阅 500；short-id 本就可选，故写 '' 是正确的
         if ($tls === 2) {
             $tlsSettings['public_key'] = isset($query['pbk']) ? $query['pbk'] : '';
             $tlsSettings['short_id'] = isset($query['sid']) ? $query['sid'] : '';
@@ -424,11 +361,9 @@ class SubscriptionParser
         }
         $networkSettings = self::uriNetworkSettings($query, $network);
 
-        // 非 none 的 encryption（Xray 25.x 的 mlkem768x25519plus）本项目**无法从 URI 忠实还原**：
-        // 它还需要 mode / rtt / client_padding / password 四个设置，而分享链接里没有这些字段
-        // （本站节点靠后台表单生成 encryption_settings，见 Server\VlessController）。
-        // 按既有的「渲染器还原不了的一律丢弃」原则整条跳过 —— 下发出去只会得到连不上的僵尸节点
-        // （不跳过的后果见 tools/vless-encryption-settings-check.php：URI 类渲染器整份订阅 500）。
+        // 非 none 的 encryption（Xray 25.x 的 mlkem768x25519plus）无法从 URI 忠实还原：还需要
+        // mode / rtt / client_padding / password 四个设置（本站节点靠后台表单生成）。按既有原则整条
+        // 跳过，下发出去只会得到连不上的僵尸节点，URI 类渲染器还会整份订阅 500
         $encryption = isset($query['encryption']) && is_scalar($query['encryption'])
             ? strtolower(trim((string)$query['encryption'])) : '';
         if ($encryption !== '' && $encryption !== 'none') {
@@ -507,13 +442,8 @@ class SubscriptionParser
     }
 
     /**
-     * hysteria://（v1）、hysteria2:// / hy2://（v2）
-     *
-     * 统一映射为 type='hysteria' + version，与 ServerHysteria 一致，
-     * 这样 Surge / Loon（判断 version===2）与 Clash 系都能渲染。
-     *
-     * @param  string $uri
-     * @return array|null
+     * hysteria://（v1）、hysteria2:// / hy2://（v2）：统一映射为 type='hysteria' + version，
+     * 与 ServerHysteria 一致，这样 Surge / Loon（判 version===2）与 Clash 系都能渲染。
      */
     private static function parseHysteria($uri)
     {
@@ -533,7 +463,7 @@ class SubscriptionParser
             $credential = isset($query['auth']) ? $query['auth'] : '';
         }
 
-        // 空凭据：与 trojan/vless/anytls 的处理保持一致，直接丢弃
+        // 空凭据直接丢弃（同 vless/trojan：空 _credential 会被当成用本站 uuid）
         if ($credential === '') {
             self::skip('hysteria_no_auth');
             return null;
@@ -559,14 +489,11 @@ class SubscriptionParser
         $node['insecure'] = $insecure;
         $node['tls_settings'] = $tlsSettings;
         $node['tlsSettings'] = $tlsSettings;
-        // 内部字段是「服务器视角」，而渲染器是反着取的
-        // （Helper::buildHysteriaUri / ClashMeta::buildHysteria 里 upmbps 取 down_mbps），
-        // 所以这里反向存，才能让下发出去的 upmbps/downmbps 与源 URI 一致
+        // 内部字段是「服务器视角」，渲染器反着取（upmbps 取 down_mbps），所以这里反向存才能与源 URI 一致
         $node['up_mbps'] = isset($query['downmbps']) ? (int)$query['downmbps'] : 0;
         $node['down_mbps'] = isset($query['upmbps']) ? (int)$query['upmbps'] : 0;
         if (!empty($query['obfs'])) {
-            // hysteria2 只有 salamander 一种混淆，渲染器是原样下发 obfs 值，
-            // 其他取值客户端不认（v1 的 obfs 是另一回事，不受此限）
+            // hysteria2 只有 salamander 一种混淆，渲染器原样下发 obfs 值，其他取值客户端不认
             if ($isV2 && strtolower($query['obfs']) !== 'salamander') {
                 self::skip('hysteria_obfs_unsupported:' . $query['obfs']);
                 return null;
@@ -581,9 +508,6 @@ class SubscriptionParser
 
     /**
      * hysteria2 专用入口（复用 parseHysteria）
-     *
-     * @param  string $uri
-     * @return array|null
      */
     private static function parseHysteria2($uri)
     {
@@ -611,8 +535,7 @@ class SubscriptionParser
         if (strpos($userinfo, ':') !== false) {
             $parts = explode(':', $userinfo, 2);
             $credential = rawurldecode($parts[0]);
-            // 渲染器的 tuic 约定是 uuid == password（一个凭据同时当 uuid 与密码），
-            // 表达不了 uuid != password 的节点，下发只会得到连不上的僵尸节点
+            // 渲染器的 tuic 约定是 uuid == password，表达不了 uuid != password 的节点 → 直接丢弃
             if (rawurldecode($parts[1]) !== $credential) {
                 self::skip('tuic_password_mismatch');
                 return null;

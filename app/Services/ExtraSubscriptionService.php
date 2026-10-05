@@ -8,31 +8,12 @@ use GuzzleHttp\Client;
 use Illuminate\Support\Facades\Log;
 
 /**
- * 额外订阅（附加节点）服务
- *
- * 架构：拉取与下发分离
- *  - refresh()：由定时任务（extra:subscribe，每分钟）拉取第三方 → 解析 → 落盘
- *  - merge()：用户订阅请求里**只读本地文件**，绝不发起 HTTP
- *    好处：用户请求不再被第三方拖慢；第三方挂掉/抖动时仍继续下发上一次成功的结果
- *
- * 存储：storage/app/extra-subscribe.json（单机文件；写入用「临时文件 + rename」保证原子，
- * 读方永远看不到写一半的内容），每条链接一份：
- *  nodes / node_count / skipped / error / last_attempt_at / last_success_at
- *  - 拉取失败只写 error 与 last_attempt_at，**不动 nodes**（旧节点继续下发）
- *  - 刷新间隔 = 后台的 extra_subscribe_cache_ttl（默认 1 小时，下限 MIN_REFRESH_TTL=30）；
- *    该配置键名是历史遗留（原来是 Redis 缓存 TTL），语义就是「多久去刷新一次」，
- *    键名不变以免动后台与线上已有配置；拉取失败后按 FAIL_RETRY_TTL(60s) 重试
- *  - 解析不出节点的响应（空 body / 非订阅内容）同样按失败处理，避免清空已下发的节点
- *  - 上一次成功太久（默认 MAX_STALE_TTL=7 天，且不短于刷新间隔的 3 倍）就不再下发，
- *    避免长期下发一堆死节点；两者取大是为了防止「间隔比它长」时节点在两次刷新间静默消失
- *  - 配置里删掉的链接，会在下次刷新时从文件里清掉
- *
- * 安全：文件在 storage 下（非 web 目录），内容含第三方节点凭据（与配置里的链接同等级）；
- *      日志里链接一律打码。链接来自后台配置项（只有管理员能改），与本站已有的
- *      custom_subscribe_url 出站请求同一信任模型，因此不做内网 SSRF 检查，
- *      只保留 http/https 白名单（挡掉 file:// / gopher:// 之类）。
- *
- * 语法上限 PHP 8.0（composer.json 要求 ^8.0）：可用 8.0 写法，不用 8.1+ 特性。
+ * 额外订阅（附加节点）服务：拉取与下发分离 —— refresh() 由定时任务（extra:subscribe，每分钟）
+ * 拉取并落盘；merge() 在用户订阅请求里只读本地文件，绝不发 HTTP。
+ * 存储 storage/app/extra-subscribe.json（临时文件 + rename 原子替换），每条链接一份；
+ * 拉取失败只写 error / last_attempt_at，不动 nodes（旧节点继续下发）。
+ * 安全：文件含第三方凭据，日志里链接一律打码；链接只来自后台配置（仅管理员可改），
+ * 与自定义订阅 URL 同一信任模型，故不做内网 SSRF 检查，只留 http/https 白名单。
  */
 class ExtraSubscriptionService
 {
@@ -70,14 +51,9 @@ class ExtraSubscriptionService
     const MAX_TIMEOUT = 30;
 
     /**
-     * 每种协议（本项目自身的节点格式）必须齐备的键
-     *
-     * 渲染器对其中大部分字段是**无守护读取**（缺键就会 Undefined array key → Laravel 转成
-     * 异常 → 整份订阅 500），所以脏存储里的节点不能只看 type/host/port。
-     * 表按 SubscriptionParser 的实际输出整理（含 snake_case 与 camelCase 两套，
-     * 不同渲染器读的写法不同）；tools/type-fields-audit.php 会校验它没有漂移。
-     *
-     * @var array
+     * 每种协议必须齐备的键。渲染器对其中多数是无守护读取，缺键 → 整份订阅 500，
+     * 所以脏存储里的节点不能只看 type/host/port。表按 SubscriptionParser 的实际输出整理
+     * （snake_case 与 camelCase 两套都有渲染器在读），tools/type-fields-audit.php 守着不漂移。
      */
     private static $nodeFields = array(
         'shadowsocks' => array('cipher'),
@@ -95,41 +71,21 @@ class ExtraSubscriptionService
     );
 
     /**
-     * 这些键**只要存在就必须是数组**
-     *
-     * $nodeFields 只查「键在不在」（array_key_exists），拦不住「键在但取值不是数组」。
-     * 而渲染器拿到这些键后会先 `$x = $server['tls_settings'] ?? []` 再直接下标，
-     * PHP 8 下对字符串下标取值是 **TypeError**（不是 warning，catch 不到）：
-     *   `$tlsSettings = 'oops'; $tlsSettings['public_key']` → Cannot access offset of type string on string
-     * 实测路径：tls_settings='oops' + tls=2 的 vless 节点能通过原守卫，
-     * 落到 ClashMeta::buildVless() / Singbox 的 reality 分支 → 整份订阅 500。
-     *
-     * 只可能来自手改 / 残留存储：解析器产出这几个键时一律是数组
-     * （SubscriptionParser 里它们都由数组字面量或 uriNetworkSettings()/vmessNetworkSettings() 构造，
-     * 后者无条件返回 array）。
-     *
-     * @var array
+     * 这些键只要存在就必须是数组：$nodeFields 只查「键在不在」，拦不住「键在但值不是数组」。
+     * 渲染器会 `$x = $server['tls_settings'] ?? []` 再直接下标，PHP 8 下对字符串下标取值是
+     * TypeError（不是 warning，catch 不到）→ 整份订阅 500。只可能来自手改 / 残留存储，
+     * 解析器产出这几个键时一律是数组。
      */
     private static $nodeArrayKeys = array('tls_settings', 'tlsSettings', 'network_settings', 'networkSettings');
 
     /**
-     * 存在性之外的第二层：这些字段的**取值**也必须合法（只收会导致渲染器抛异常或客户端拒收的）
-     *
-     * - shadowsocks 的 cipher：白名单就是 Helper::SS_CIPHERS（4 种 AEAD）—— ClashMeta / ClashVerge /
-     *   Stash / Singbox **没有自己的白名单**，会把空值或陌生值原样写进配置（客户端不认）
-     *   ——tools/store-value-audit.php 实测确认
-     * - 2022-blake3-* 尤其不能放：它的 server key 要由 created_at 派生，而外部节点没有 created_at，
-     *   上面那几个渲染器在 ss2022 分支里是无守护读取 → **整份订阅 500**
-     * - vless 的 encryption：只放行 'none'。非 none 的值（Xray 25.x 的 mlkem768x25519plus）
-     *   需要 mode / rtt / client_padding / password 四个设置，URI 里没有，外部节点**无法忠实还原**
-     *   （解析器已在 parseVless() 里整条跳过，这里是第二道：旧存储 / 手改存储里的节点仍会被挡掉）。
-     *   放行它会同时踩两个坑：URI 类渲染器读 encryption_settings 无守护（整份订阅 500），
-     *   Clash 系则按「无加密」下发 → 出一个必然连不上的僵尸节点
-     *
-     * 其余字段不进这张表：network 在渲染器侧已有 networkExpressible 逐格判定；
-     * port 不做校验（既定决定，且多端口形态 `20000-30000` 是合法的）。
-     *
-     * @var array
+     * 第二层：这些字段的取值也必须合法（只收会让渲染器抛异常或客户端拒收的）。
+     * - ss cipher：白名单即 Helper::SS_CIPHERS；ClashMeta / ClashVerge / Stash / Singbox 没有
+     *   自己的白名单，会把空值或陌生值原样写进配置；2022-blake3-* 更不能放 —— 它的 server key
+     *   要靠 created_at 派生，外部节点没有 → ss2022 分支整份订阅 500
+     * - vless encryption：只放行 'none'；非 none 需要 URI 里没有的 4 个设置，放行要么 500、
+     *   要么出一个必然连不上的僵尸节点
+     * network / port 不进这张表（前者有 networkExpressible 逐格判定，后者多端口形态合法）。
      */
     private static $nodeValues = array(
         'shadowsocks' => array(
@@ -142,10 +98,7 @@ class ExtraSubscriptionService
     );
 
     /**
-     * 把「额外订阅」的节点合并进本站节点列表（用户请求路径：只读本地，不发 HTTP）
-     *
-     * @param  array $servers 本站可用节点
-     * @return array
+     * 把额外订阅的节点合并进本站节点列表（用户请求路径：只读本地，不发 HTTP）
      */
     public function merge(array $servers)
     {
@@ -166,10 +119,8 @@ class ExtraSubscriptionService
 
             $added = array();
             foreach ($nodes as $node) {
-                // 存储文件可能残留旧格式或被手改：脏节点直接丢弃。
-                // type/host/port 是渲染器**无守护**读取的字段（ClashMeta/ClashVerge/Stash/Singbox
-                // 共 32 处直接读 $server['host']），缺任何一个都会把整份订阅打成 500，
-                // 而不是少一个节点——所以这里必须自己筛。
+                // 存储可能残留旧格式或被手改：脏节点直接丢弃。type/host/port 是渲染器无守护读取的字段
+                // （共 32 处直接读 $server['host']），缺一个就把整份订阅打成 500，所以必须自己筛。
                 if (!is_array($node)) {
                     continue;
                 }
@@ -179,12 +130,9 @@ class ExtraSubscriptionService
                 if ($type === '' || $host === '' || $port === '') {
                     continue;
                 }
-                // 存储文件会跨代码版本存活（刷新失败时最长沿用 7 天），旧版解析器写下的形状
-                // 可能缺几个「可选但被渲染器无守护读取」的键：先补齐再校验。
-                // 对当前解析器产出的节点这一步是恒等操作（只补缺失的键，不改已有值）。
+                // 存储会跨版本存活：可能缺「可选但被渲染器无守护读取」的键，先补齐再校验。
                 $node = self::repairOptionalKeys($type, $node);
-                // 类型必需字段：脏存储（手改 / 残留旧格式 / 解析器升级前后的存储）里的节点
-                // 只看 type/host/port 不够 —— 缺协议字段会让渲染器直接抛异常
+                // 类型必需字段：脏存储里的节点只看 type/host/port 不够，缺协议字段渲染器就抛异常
                 if (!self::nodeComplete($type, $node)) {
                     continue;
                 }
@@ -238,13 +186,11 @@ class ExtraSubscriptionService
         }
 
         $urls = $this->urls(null, true);
-        // 注意：$urls 为空**不能**在这里提前 return —— 配置里把链接全删掉时，
-        // 还要靠下面那段清理把存储里的旧记录清掉（记录里含第三方凭据），
-        // 否则它会永久留在 storage/app/extra-subscribe.json 里。
-        // 没有链接时 $due 必然为空，不会发起任何请求，只是把存储清空。
+        // $urls 为空不能提前 return：配置里把链接全删掉时，要靠下面的清理把存储里的旧记录清掉
+        // （记录含第三方凭据），否则它会永远留在 extra-subscribe.json 里；没有链接时 $due 为空，
+        // 不发任何请求，只是把存储清空。
 
-        // storage/app 在个别部署里可能不存在：先确保目录在，
-        // 否则锁文件与存储文件都写不进去，功能会静默失效
+        // storage/app 在个别部署里可能不存在：先确保目录在，否则锁文件与存储文件都写不进去，功能静默失效
         $this->ensureStoreDir();
 
         // 同一时刻只允许一个实例真正拉取（定时任务与手动执行可能撞上）
@@ -296,8 +242,7 @@ class ExtraSubscriptionService
                 }
             }
 
-            // 没有到期链接、也没有需要清理的记录时不必重写文件：
-            // 这条命令每分钟跑一次，无条件写会让存储文件每分钟都被无谓 rename 一次
+            // 没有到期链接、也没有要清理的记录时不必重写文件：这条命令每分钟跑一次，无条件写等于每分钟 rename 一次
             if ($due || $cleaned) {
                 $this->saveStore($store);
             }
@@ -311,19 +256,10 @@ class ExtraSubscriptionService
     }
 
     /**
-     * 把当前配置里的链接标记为「该重新拉取了」（供后台保存配置后调用）
-     *
-     * 为什么不在保存请求里直接调 refresh()：
-     *   1. 那会把后台保存卡住最长一个超时（现在默认 15s），管理员点保存要干等
-     *   2. 同一个请求进程里的 config() 还是**旧值**（保存只重写了文件与缓存，
-     *      没重载内存里的配置树），直接用会拿旧链接去拉
-     * 所以这里只做一件小事：把 last_attempt_at 置 0，让下一轮 extra:subscribe
-     * （每分钟）判定为「到期」，从而立刻去第三方拉最新结果。
-     *
-     * 只改时间戳、**不动 nodes**，所以「标记」到「真正拉取」之间不会出现没有节点的空窗；
-     * 拉取失败时旧节点照旧继续下发（failRow 语义）。
-     *
-     * @return bool 是否真的改动了存储
+     * 把当前配置里的链接标记为「该重新拉取了」（后台保存配置后调用）。
+     * 不在这里直接 refresh()：① 会把后台保存卡住最长一个超时；② 同一请求进程里的 config()
+     * 还是旧值。所以只把 last_attempt_at 置 0，让下一轮 extra:subscribe 判定为到期；
+     * 不动 nodes，所以「标记」到「真正拉取」之间没有空窗。
      */
     public function markDue()
     {
@@ -371,8 +307,6 @@ class ExtraSubscriptionService
 
     /**
      * 当前各链接的状态（供命令展示）
-     *
-     * @return array
      */
     public function status()
     {
@@ -390,8 +324,7 @@ class ExtraSubscriptionService
                 'last_success_at' => $lastSuccess,
                 'last_attempt_at' => isset($row['last_attempt_at']) ? (int)$row['last_attempt_at'] : null,
                 'error'           => isset($row['error']) ? $row['error'] : null,
-                // 与 nodes() 用同一套判据（含「这条到底有没有节点」），
-                // 否则「有上次成功时间、但节点是空的」会被谎报成「当前下发：是」
+                // 与 nodes() 用同一套判据，否则「有上次成功时间、但节点是空的」会被谎报成「当前下发：是」
                 'serving'         => $lastSuccess !== null && $lastSuccess + $this->maxStaleTtl() >= $now
                     && !empty($row['nodes']) && is_array($row['nodes']),
             );
@@ -406,8 +339,6 @@ class ExtraSubscriptionService
 
     /**
      * 读取本地存储里的附加节点（不发任何请求）
-     *
-     * @return array
      */
     private function nodes()
     {
@@ -448,11 +379,7 @@ class ExtraSubscriptionService
      * ------------------------------------------------------------------ */
 
     /**
-     * 并发拉取 due 里的链接，并把结果写回 $store（失败保留原 nodes）
-     *
-     * @param array $store 引用
-     * @param array $due   url => cacheKey
-     * @param int   $now
+     * 并发拉取 due 里的链接，并把结果写回 $store（失败保留原 nodes）。$due：url => cacheKey
      */
     private function fetchInto(&$store, $due, $now)
     {
@@ -460,7 +387,8 @@ class ExtraSubscriptionService
         $promises = array();
 
         foreach ($due as $url => $key) {
-            // 仅允许 http/https；不通过则不请求，直接按失败记录
+            // 仅允许 http/https；不通过则不请求，直接按失败记录。构造请求本身也可能抛（URL 形态奇怪），
+            // 否则一条坏链接会把整批（其他链接）的刷新一起带崩。
             if (!$this->isUrlAllowed($url)) {
                 $store['urls'][$key] = $this->failRow($store, $key, $url, $now, 'url not allowed');
                 continue;
@@ -476,9 +404,8 @@ class ExtraSubscriptionService
             }
         }
 
-        // 不用 \GuzzleHttp\Promise\settle()：函数式 API 在 promises 2.0 已移除，
-        // 而 guzzle ^7.4.3 新装会解析到 2.x，调用即 undefined function。
-        // 逐个 wait()：请求已在同一 curl_multi 中，并发性不受影响，单条失败不影响其他条。
+        // 不用 \GuzzleHttp\Promise\settle()：promises 2.0 已移除该函数（guzzle ^7.4.3 新装会解析到 2.x）。
+        // 逐个 wait() 仍在同一 curl_multi 里，并发性不受影响，单条失败也不影响其他条。
         foreach ($promises as $url => $promise) {
             $key = $due[$url];
 
@@ -497,8 +424,7 @@ class ExtraSubscriptionService
                     . ' - ' . $this->maskUrl($url));
 
                 if (!$parsed['nodes']) {
-                    // 解析不出节点（空 body / 非 URI 列表等）：按失败处理，
-                    // 保留上一次成功的结果，别让一次抖动把已下发的节点清空
+                    // 解析不出节点（空 body / 非 URI 列表等）：按失败处理并保留上一次成功的结果，别让一次抖动把已下发的节点清空
                     $store['urls'][$key] = $this->failRow($store, $key, $url, $now, 'no nodes parsed');
                     continue;
                 }
@@ -522,16 +448,9 @@ class ExtraSubscriptionService
     }
 
     /**
-     * 节点是否符合「本项目自身的协议格式」
-     *
-     * 三类会被丢弃：类型不在表里（本项目没有这个协议）、缺任一必需字段（渲染器会 500）、
-     * 凭据为空（渲染器会退回本站用户 uuid → 发出必然连不上的节点）。
-     * 第四类：字段齐全但**取值非法**（见 $nodeValues）——会下发客户端不认的配置，
-     * 或让渲染器抛异常（整份订阅 500）。
-     *
-     * @param  string $type
-     * @param  array  $node
-     * @return bool
+     * 节点是否符合本项目自身的协议格式。三类直接丢：类型不在表里、缺任一必需字段
+     * （渲染器会 500）、凭据为空（会退回本站用户 uuid → 必然连不上）。
+     * 第四类：字段齐全但取值非法（见 $nodeValues）。
      */
     private static function nodeComplete($type, $node)
     {
@@ -561,28 +480,12 @@ class ExtraSubscriptionService
     }
 
     /**
-     * 补齐「可选、但被渲染器无守护读取」的键（只补缺失的键，绝不改已有值）
-     *
-     * 为什么需要：存储文件会跨代码版本存活。刷新失败时旧节点最长继续沿用
-     * MAX_STALE_TTL(7 天)，这段时间里读到的可能是旧版解析器写下的形状，而渲染器对
-     * 这些键是直接读的（`$tlsSettings['short_id']`，无 `??`）。
-     *
-     * 当前唯一确认可达的一处：**reality 的 public_key / short_id**。
-     * 旧版 parseVless() 是**条件写入**（`if (!empty($query['sid']))`，见 6723dd78 / b032ef22），
-     * 而 sid 在 reality 分享链接里本就可选 —— 于是旧存储里会留下「tls=2 但 tls_settings
-     * 里没有 short_id」的节点，Clash 系 / Sing-box 渲染器在 tls==2 时无守护读取该键
-     * → 整份订阅 500（历史上 c9ba28c8 就是修这个：解析器侧已改为无条件写 ''，
-     * 但**已经落盘的旧节点不会因此变好**）。这里补的默认值就是解析器现在写的值，
-     * 所以补完的节点与「同一 URI 用当前解析器解析」的结果一致。
-     *
-     * 刻意不做的：不补 mport / obfs-host / obfs-path / obfs_password。核对过
-     * SubscriptionParser 的全部 28 个历史版本，这几组键**从首版起就是与主键无条件同时写入**
-     * （三元兜底 ''），任何解析器版本都不可能产出「有 obfs 但没有 obfs-host」这种形状；
-     * 补它们只会掩盖手工改坏的存储，属于无收益的额外分支。
-     *
-     * @param  string $type
-     * @param  array  $node
-     * @return array
+     * 补齐「可选、但被渲染器无守护读取」的键（只补缺失的键，绝不改已有值）。
+     * 存储跨版本存活（刷新失败时最长沿用 MAX_STALE_TTL），读到的可能是旧版解析器的形状。
+     * 唯一确认可达的一处：reality 的 public_key / short_id（旧版 parseVless 里 sid 是条件写入，
+     * 而 sid 本就可选）→ 缺了整份订阅 500；补的值就是解析器现在写的值。
+     * 刻意不补 mport / obfs-host / obfs-path / obfs_password：核对过解析器全部历史版本，
+     * 它们从首版起就与主键无条件同时写入，补只会掩盖手改坏的存储。
      */
     private static function repairOptionalKeys($type, array $node)
     {
@@ -591,11 +494,8 @@ class ExtraSubscriptionService
             return $node;
         }
         foreach (array('tls_settings', 'tlsSettings') as $key) {
-            // 非数组 / 空容器都不动：
-            //  - 非数组由 nodeComplete 的 $nodeArrayKeys 直接丢弃（这里不越权造数组）
-            //  - 空数组不是任何解析器版本会产出的形状（旧版也至少写 server_name / allow_insecure /
-            //    fingerprint），动它会翻转 ClashMeta `if ($tlsSettings)` 的真值、改变下发内容，
-            //    属于无收益的行为变更
+            // 非数组 / 空容器都不动：非数组交给 nodeComplete 的 $nodeArrayKeys 丢弃；空数组不是任何
+            // 解析器版本会产出的形状，动它会翻转 ClashMeta `if ($tlsSettings)` 的真值、改变下发内容
             if (!isset($node[$key]) || !is_array($node[$key]) || !$node[$key]) {
                 continue;
             }
@@ -612,8 +512,6 @@ class ExtraSubscriptionService
 
     /**
      * 构造「失败」记录：保留上一次成功的 nodes，只更新 error 与 last_attempt_at
-     *
-     * @return array
      */
     private function failRow($store, $key, $url, $now, $error)
     {
@@ -630,12 +528,7 @@ class ExtraSubscriptionService
     }
 
     /**
-     * 该条链接是否到了该刷新的时间
-     *
-     * @param  array|null $row
-     * @param  int        $now
-     * @param  int        $interval
-     * @return bool
+     * 该条链接是否到了该刷新的时间（从没拉过 / 过了刷新间隔 / 上次失败已过重试间隔）
      */
     private function isDue($row, $now, $interval)
     {
@@ -657,7 +550,7 @@ class ExtraSubscriptionService
      * ------------------------------------------------------------------ */
 
     /**
-     * 确保 storage/app 存在（个别部署里可能被清理；不存在则锁文件/存储文件都写不进去）
+     * 确保 storage/app 存在（个别部署里可能被清理；不存在则锁文件与存储文件都写不进去）
      */
     private function ensureStoreDir()
     {
@@ -669,8 +562,6 @@ class ExtraSubscriptionService
 
     /**
      * 存储文件路径
-     *
-     * @return string
      */
     private function storePath()
     {
@@ -678,11 +569,8 @@ class ExtraSubscriptionService
     }
 
     /**
-     * 读取存储文件（不存在 / 损坏一律当空处理，不影响本站节点下发）
-     *
-     * @param  bool $fromRefresh 是否由刷新/查看状态触发的：
-     *                           请求路径上不记日志，否则文件一损坏每个订阅请求都刷一行
-     * @return array
+     * 读取存储文件（不存在 / 损坏一律当空，不影响本站节点下发）。
+     * $fromRefresh=false：请求路径上传 false，否则文件一损坏每个订阅请求都刷一行日志。
      */
     private function loadStore($fromRefresh = false)
     {
@@ -707,16 +595,12 @@ class ExtraSubscriptionService
     }
 
     /**
-     * 写存储文件：先写临时文件再 rename（原子替换）
-     *
-     * @param  array $store
-     * @return bool
+     * 写存储文件：先写临时文件再 rename（原子替换），读方永远看不到写一半的内容
      */
     private function saveStore($store)
     {
         $path = $this->storePath();
-        // JSON_INVALID_UTF8_SUBSTITUTE：第三方节点名可能是 GBK / 截断的 UTF-8，
-        // 不加这个标志 json_encode 会整体返回 false -> 一份节点都存不下来
+        // JSON_INVALID_UTF8_SUBSTITUTE：第三方节点名可能是 GBK / 截断的 UTF-8，不加这个标志 json_encode 会整体返回 false → 一个节点都存不下来
         $json = json_encode($store, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
             | JSON_INVALID_UTF8_SUBSTITUTE);
         if ($json === false) {
@@ -733,17 +617,14 @@ class ExtraSubscriptionService
             Log::warning('extra subscribe: replace store failed');
             return false;
         }
-        // 本文件由定时任务（可能是 root）写、由 web 用户读：
-        // 万一写入方 umask 是 0077，会变成 0600 导致 web 读不到，这里显式放开读权限
+        // 本文件由定时任务（可能是 root）写、web 用户读：显式放开读权限，免得 umask 0077 写成 0600 后 web 读不到
         @chmod($path, 0644);
 
         return true;
     }
 
     /**
-     * 取独占锁：拿不到返回 null（原因分两种，日志里区分开）
-     *
-     * @return resource|null
+     * 取独占锁：拿不到返回 null（「已有实例在跑」与「锁文件建不出来」两种原因在日志里分开）
      */
     private function lockStore()
     {
@@ -780,14 +661,9 @@ class ExtraSubscriptionService
      * ------------------------------------------------------------------ */
 
     /**
-     * 读取额外订阅链接配置，拆分为去重后的数组
-     *
-     * 一行一条（回车换行，不支持逗号）；只做拆分 / 去重 / 限流，
-     * 合法性交给 isUrlAllowed()。
-     *
-     * @param  string|null $raw 不传则读当前配置
-     * @param  bool        $logLimit 是否记录「超过上限」日志：请求路径上不记
-     * @return array
+     * 读取额外订阅链接配置，拆成去重数组：一行一条（回车换行，不支持逗号），
+     * 只做拆分 / 去重 / 限流，合法性交给 isUrlAllowed()。
+     * $logLimit=false：请求路径上不记「超过上限」日志。
      */
     private function urls($raw = null, $logLimit = false)
     {
@@ -822,16 +698,9 @@ class ExtraSubscriptionService
     }
 
     /**
-     * 刷新间隔（秒）：把后台配置的「缓存时间」夹到 [MIN_REFRESH_TTL, MAX_REFRESH_TTL]
-     *
-     * 配置键 extra_subscribe_cache_ttl 是历史遗留名字，现在语义就是
-     * 「多久去第三方刷新一次」；键名不改以免动后台 UI 与线上已有配置。
-     *
-     * 上限存在的理由：设得过大等于长期不刷新，而节点会一直被下发
-     * （陈旧上限是 max(MAX_STALE_TTL, 间隔×3)，间隔越大反而越不会过期）。
-     * 后台表单的 min/max 规则引用同一批常量，两边不会漂移。
-     *
-     * @return int
+     * 刷新间隔（秒）：把后台「缓存时间」夹到 [MIN_REFRESH_TTL, MAX_REFRESH_TTL]。
+     * 配置键 extra_subscribe_cache_ttl 是历史遗留名字（语义就是多久刷新一次），不改键名以免动
+     * 后台 UI 与线上已有配置；后台表单的 min/max 引用同一批常量，两边不会漂移。
      */
     private function refreshInterval()
     {
@@ -847,13 +716,8 @@ class ExtraSubscriptionService
     }
 
     /**
-     * 上一次成功的结果最长沿用（秒）
-     *
-     * 取「MAX_STALE_TTL(7 天)」与「刷新间隔 × 3」中的大者：
-     * 「缓存时间」字段没有上限，可能被设成比 7 天还长，
-     * 此时用小者会让节点在两次刷新之间静默消失 —— 必须先有机会刷新。
-     *
-     * @return int
+     * 上一次成功的结果最长沿用（秒）：取 MAX_STALE_TTL 与「刷新间隔 × 3」的大者 ——
+     * 间隔可能被设得比 7 天还长，用小者会让节点在两次刷新之间静默消失。
      */
     private function maxStaleTtl()
     {
@@ -864,9 +728,6 @@ class ExtraSubscriptionService
 
     /**
      * URL 校验：仅允许 http / https
-     *
-     * @param  string $url
-     * @return bool
      */
     private function isUrlAllowed($url)
     {
@@ -885,14 +746,11 @@ class ExtraSubscriptionService
 
     /**
      * 构造请求选项
-     *
-     * @return array
      */
     private function requestOptions()
     {
-        // 并发模式下整体耗时约等于最慢的一条，所以单条超时就是整批的耗时上限。
-        // 本超时只发生在定时任务（extra:subscribe）里，不在用户请求路径上，
-        // 所以可以给宽一点：默认 15s，夹紧到 [3, 30]。
+        // 本超时只在定时任务里等待（并发拉取，整批耗时≈最慢一条），不在用户请求路径上，
+        // 所以给得宽一点：默认 15s，夹在 [3, 30]。
         $timeout = (int)config('v2board.extra_subscribe_timeout', self::DEFAULT_TIMEOUT);
         if ($timeout < self::MIN_TIMEOUT) {
             $timeout = self::MIN_TIMEOUT;
@@ -904,8 +762,7 @@ class ExtraSubscriptionService
         return array(
             'timeout'         => $timeout,
             'connect_timeout' => $timeout,
-            // 不要加 'stream' => true：stream 模式下 promise 收到响应头就 resolve，
-            // 异步时 body 尚未写入流，readBody() 读到空串 -> 0 节点
+            // 不要加 'stream' => true：promise 收到响应头就 resolve，异步时 body 还没写入流 → readBody() 读到空串、0 节点
             'headers'         => array(
                 'User-Agent' => 'v2board-extra-subscribe/1.0',
                 'Accept'     => 'text/plain, */*',
@@ -914,10 +771,7 @@ class ExtraSubscriptionService
     }
 
     /**
-     * 流式读取响应体并限制大小（避免大文件打爆内存）
-     *
-     * @param  \Psr\Http\Message\StreamInterface $stream
-     * @return string|null 超限时返回 null
+     * 流式读取响应体并限制大小（避免大文件打爆内存）；超限返回 null
      */
     private function readBody($stream)
     {
@@ -938,10 +792,7 @@ class ExtraSubscriptionService
     }
 
     /**
-     * 给 URL 打码：丢掉 query（即订阅 token）
-     *
-     * @param  string $url
-     * @return string
+     * 给 URL 打码：丢掉 query（订阅 token 在这里）
      */
     private function maskUrl($url)
     {
@@ -962,13 +813,8 @@ class ExtraSubscriptionService
     }
 
     /**
-     * 把一段文本里的所有 http(s) 地址打码
-     *
-     * 异常消息里出现的 URL 可能是跳转后的最终地址（与请求时的原始串不同），
-     * 所以不能只做 str_replace($url, ...)，否则 token 会明文进日志。
-     *
-     * @param  string $text
-     * @return string
+     * 把一段文本里所有 http(s) 地址打码：异常消息里出现的可能是跳转后的最终地址，
+     * 只 str_replace($url, ...) 挡不住，token 会明文进日志。
      */
     private function maskText($text)
     {
