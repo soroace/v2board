@@ -5958,7 +5958,17 @@
                 }, f.a.createElement(l["a"], {
                     checked: parseInt(r.allow_new_period),
                     onChange: e=>this.set("subscribe", "allow_new_period", e ? 1 : 0)
-                })), f.a.createElement(m, {
+                })), r.allow_new_period ? f.a.createElement(f.a.Fragment, null, f.a.createElement(m, {
+                    isChildren: !0,
+                    title: "\u6700\u4f4e\u4f7f\u7528\u7387\uff08%\uff09",
+                    description: "\u6d41\u91cf\u4f7f\u7528\u7387\u8fbe\u5230\u8be5\u767e\u5206\u6bd4\u540e\uff0c\u7528\u6237\u624d\u53ef\u63d0\u524d\u5f00\u542f\u4e0b\u4e00\u4e2a\u6d41\u91cf\u5468\u671f\u3002"
+                }, f.a.createElement("input", {
+                    type: "text",
+                    className: "form-control",
+                    placeholder: "\u8bf7\u8f93\u5165",
+                    defaultValue: r.new_period_min_usage,
+                    onChange: e=>this.set("subscribe", "new_period_min_usage", e.target.value)
+                }))) : "", f.a.createElement(m, {
                     title: "\u5f53\u8ba2\u9605\u65b0\u8d2d\u65f6\u89e6\u53d1\u4e8b\u4ef6",
                     description: "\u65b0\u8d2d\u8ba2\u9605\u5b8c\u6210\u65f6\u5c06\u89e6\u53d1\u8be5\u4efb\u52a1\u3002"
                 }, f.a.createElement("select", {

@@ -23,9 +23,6 @@ use Illuminate\Support\Facades\DB;
 
 class UserController extends Controller
 {
-    // 提前开启下一个流量周期所需的最低使用率（%）：固定 80，面板已去掉该输入框
-    private const NEW_PERIOD_MIN_USAGE = 80;
-
     public function getActiveSession(Request $request)
     {
         $user = User::find($request->user['id']);
@@ -101,7 +98,7 @@ class UserController extends Controller
             if (!$user) {
                 abort(500, __('The user does not exist'));
             }
-            $minUsage = self::NEW_PERIOD_MIN_USAGE;
+            $minUsage = (int)config('v2board.new_period_min_usage', 100);
             $usedUsage = $user->u + $user->d;
             $usedPercent = $user->transfer_enable > 0 ? $usedUsage * 100 / $user->transfer_enable : 0;
             if ($usedPercent < $minUsage) {
@@ -355,7 +352,7 @@ class UserController extends Controller
         $userService = new UserService();
         $user['reset_day'] = $userService->getResetDay($user);
         $user['allow_new_period'] = config('v2board.allow_new_period', 0);
-        $user['new_period_min_usage'] = self::NEW_PERIOD_MIN_USAGE;
+        $user['new_period_min_usage'] = config('v2board.new_period_min_usage', 100);
         return response([
             'data' => $user
         ]);
