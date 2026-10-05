@@ -48,7 +48,6 @@ class ConfigSave extends FormRequest
         'reset_traffic_method' => 'in:0,1,2,3,4',
         'surplus_enable' => 'in:0,1',
         'allow_new_period' => 'in:0,1',
-        'new_period_min_usage' => 'nullable|integer|min:0|max:100',
         'new_order_event_id' => 'in:0,1',
         'renew_order_event_id' => 'in:0,1',
         'change_order_event_id' => 'in:0,1',

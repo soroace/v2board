@@ -112,7 +112,6 @@ class ConfigController extends Controller
                 'reset_traffic_method' => (int)config('v2board.reset_traffic_method', 0),
                 'surplus_enable' => (int)config('v2board.surplus_enable', 1),
                 'allow_new_period' => (int)config('v2board.allow_new_period', 0),
-                'new_period_min_usage' => (int)config('v2board.new_period_min_usage', 100),
                 'new_order_event_id' => (int)config('v2board.new_order_event_id', 0),
                 'renew_order_event_id' => (int)config('v2board.renew_order_event_id', 0),
                 'change_order_event_id' => (int)config('v2board.change_order_event_id', 0),
