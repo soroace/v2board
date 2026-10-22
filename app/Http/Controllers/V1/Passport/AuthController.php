@@ -53,17 +53,10 @@ class AuthController extends Controller
                 abort(500, __('You must use the invitation code to register'));
             }
         }
-        // 邮箱格式白名单（可选开关）：判据见 Helper::emailPolicyViolation()
-        if ((int)config('v2board.email_format_strict_enable', 0)) {
-            $emailViolation = Helper::emailPolicyViolation($request->input('email'));
-            if ($emailViolation === 'uppercase') {
-                abort(500, __('Email must be all lowercase'));
-            }
-            if ($emailViolation === 'non_ascii') {
-                abort(500, __('Email can not contain non-ASCII characters'));
-            }
-            if ($emailViolation === 'illegal_local') {
-                abort(500, __('Only letters, numbers and . _ - are allowed before @'));
+        if ((int)config('v2board.email_gmail_limit_enable', 0)) {
+            $prefix = explode('@', $request->input('email'))[0];
+            if (strpos($prefix, '.') !== false || strpos($prefix, '+') !== false) {
+                abort(500, __('Gmail alias is not supported'));
             }
         }
         $email = $request->input('email');

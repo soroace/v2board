@@ -5802,11 +5802,11 @@
                     checked: parseInt(_.email_verify),
                     onChange: e=>this.set("safe", "email_verify", e ? 1 : 0)
                 })), f.a.createElement(m, {
-                    title: "\u4e25\u683c\u90ae\u7bb1\u683c\u5f0f",
-                    description: "\u5f00\u542f\u540e\u53ea\u5141\u8bb8\u5c0f\u5199\u5b57\u6bcd\u3001\u6570\u5b57\u548c . _ - \u7ec4\u6210\u7684\u90ae\u7bb1\u3002"
+                    title: "\u7981\u6b62\u4f7f\u7528Gmail\u591a\u522b\u540d",
+                    description: "\u5f00\u542f\u540eGmail\u591a\u522b\u540d\u5c06\u65e0\u6cd5\u6ce8\u518c\u3002"
                 }, f.a.createElement(l["a"], {
-                    checked: parseInt(_.email_format_strict_enable),
-                    onChange: e=>this.set("safe", "email_format_strict_enable", e ? 1 : 0)
+                    checked: parseInt(_.email_gmail_limit_enable),
+                    onChange: e=>this.set("safe", "email_gmail_limit_enable", e ? 1 : 0)
                 })), f.a.createElement(m, {
                     title: "\u5b89\u5168\u6a21\u5f0f",
                     description: "\u5f00\u542f\u540e\u9664\u4e86\u7ad9\u70b9URL\u4ee5\u5916\u7684\u7ed1\u5b9a\u672c\u7ad9\u70b9\u7684\u57df\u540d\u8bbf\u95ee\u90fd\u5c06\u4f1a\u88ab403\u3002"

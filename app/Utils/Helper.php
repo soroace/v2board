@@ -95,29 +95,6 @@ class Helper
         return true;
     }
 
-    // 邮箱格式白名单：开关 email_format_strict_enable（默认关），只在注册生效
-    public static function emailPolicyViolation($email)
-    {
-        if (!is_string($email)) {
-            return null;
-        }
-        if (preg_match('/[^\x20-\x7E]/', $email)) {
-            return 'non_ascii';
-        }
-        if (preg_match('/[A-Z]/', $email)) {
-            return 'uppercase';
-        }
-        $at = strrpos($email, '@');
-        if ($at === false) {
-            return null;
-        }
-        if (preg_match('/[^a-z0-9._-]/', substr($email, 0, $at))) {
-            return 'illegal_local';
-        }
-
-        return null;
-    }
-
     public static function trafficConvert(int $byte)
     {
         $kb = 1024;
