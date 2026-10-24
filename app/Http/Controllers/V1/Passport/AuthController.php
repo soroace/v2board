@@ -55,7 +55,7 @@ class AuthController extends Controller
         }
         if ((int)config('v2board.email_gmail_limit_enable', 0)) {
             $prefix = explode('@', $request->input('email'))[0];
-            if (strpos($prefix, '.') !== false || strpos($prefix, '+') !== false) {
+            if (strpos($prefix, '+') !== false) {
                 abort(500, __('Gmail alias is not supported'));
             }
         }

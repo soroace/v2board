@@ -59,7 +59,7 @@ class CommController extends Controller
         // 检查是否是gmail别名邮箱
         if ((int)config('v2board.email_gmail_limit_enable', 0)) {
             $prefix = explode('@', $request->input('email'))[0];
-            if (strpos($prefix, '.') !== false || strpos($prefix, '+') !== false) {
+            if (strpos($prefix, '+') !== false) {
                 abort(500, __('Gmail alias is not supported'));
             }
         }
