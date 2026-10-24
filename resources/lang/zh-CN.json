@@ -97,5 +97,7 @@
     "Current product is sold out": "当前商品已售罄",
     "There are too many password errors, please try again after :minute minutes.": "密码错误次数过多，请 :minute 分钟后再试",
     "Reset failed, Please try again later": "重置失败，请稍后再试",
-    "Email can only contain letters, numbers and . _ -": "邮箱只能包含小写字母、数字和 . _ -"
+    "Gmail alias is not supported": "不支持 Gmail 别名邮箱",
+    "Email can only contain lowercase letters": "邮箱只能包含小写字母",
+    "Email contains unsupported characters": "邮箱包含不支持的字符"
 }
