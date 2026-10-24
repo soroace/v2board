@@ -54,7 +54,8 @@ class AuthController extends Controller
             }
         }
         if ((int)config('v2board.email_gmail_limit_enable', 0)) {
-            if (preg_match('/[^a-z0-9._@-]/', $request->input('email'))) {
+            $prefix = explode('@', $request->input('email'))[0];
+            if (preg_match('/[^a-z0-9._-]/', $prefix)) {
                 abort(500, __('Email can only contain letters, numbers and . _ -'));
             }
         }
