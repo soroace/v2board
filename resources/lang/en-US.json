@@ -96,5 +96,5 @@
     "Current product is sold out": "Current product is sold out",
     "There are too many password errors, please try again after :minute minutes.": "There are too many password errors, please try again after :minute minutes.",
     "Reset failed, Please try again later": "Reset failed, Please try again later",
-    "Gmail alias is not supported": "Gmail alias is not supported"
+    "Email can only contain letters, numbers and . _ -": "Email can only contain letters, numbers and . _ -"
 }
